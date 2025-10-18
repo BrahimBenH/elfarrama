@@ -11,49 +11,87 @@ def classify_digit(cnt, contours, hierarchy, thresh, cnt_idx, roi_frame):
     x, y, w, h = cv2.boundingRect(cnt)
     roi = thresh[y:y+h, x:x+w]
 
-    # Check if the digit has a hole (like 0, 6, 8, 9)
-    has_hole = any(hierarchy[0][j][3] == cnt_idx for j in range(len(hierarchy[0])))
+    # Check if the digit has a complete closed hole (like 0, 6, 8, 9)
+    has_complete_hole = False
+    hole_contour = None
+    
+    for j in range(len(hierarchy[0])):
+        if hierarchy[0][j][3] == cnt_idx:  # This contour is inside our main contour
+            inner_cnt = contours[j]
+            
+            # Check if this inner contour is a complete closed circle/hole
+            # Calculate circularity: 4π*area/perimeter²
+            area = cv2.contourArea(inner_cnt)
+            perimeter = cv2.arcLength(inner_cnt, True)
+            
+            if perimeter > 0 and area > 100:  # Minimum area threshold for a valid hole
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                
+                # A perfect circle has circularity = 1, we allow some tolerance
+                # Also check that the hole is reasonably sized relative to the outer contour
+                outer_area = cv2.contourArea(cnt)
+                hole_ratio = area / outer_area if outer_area > 0 else 0
+                
+                if circularity > 0.3 and hole_ratio > 0.05 and hole_ratio < 0.7:
+                    has_complete_hole = True
+                    hole_contour = inner_cnt
+                    break
 
-    if has_hole:
+    if has_complete_hole and hole_contour is not None:
         # 6 vs 9
         M = cv2.moments(cnt)
         if M['m00'] == 0:
             return None
         cy = int(M['m01']/M['m00'])
 
-        for j in range(len(hierarchy[0])):
-            if hierarchy[0][j][3] == cnt_idx:
-                Mh = cv2.moments(contours[j])
-                if Mh['m00'] != 0:
-                    hy = int(Mh['m01']/Mh['m00'])
-                    # Draw the detected hole center for debugging
-                    cv2.circle(roi_frame, (x + int(Mh['m10']/Mh['m00']), y + hy), 5, (255, 0, 0), -1)
-
-                    if hy < cy:
-                        return 9
-                    else:
-                        return 6
+        # Use the validated hole contour
+        Mh = cv2.moments(hole_contour)
+        if Mh['m00'] != 0:
+            hy = int(Mh['m01']/Mh['m00'])
+            hx = int(Mh['m10']/Mh['m00'])
+            # Draw the detected hole center for debugging
+            cv2.circle(roi_frame, (x + hx, y + hy), 5, (255, 0, 0), -1)
+            
+            # Compare hole position relative to the main contour center
+            if hy < cy:
+                return 9  # Hole is in upper part
+            else:
+                return 6  # Hole is in lower part
     else:
-        # 3 vs 5 using line detection
+        # 3 vs 5 using more strict line detection
         edges = cv2.Canny(roi, 50, 150, apertureSize=3)
         lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=20,
                                  minLineLength=w//3, maxLineGap=5)
 
         vertical_left = False
+        horizontal_lines = 0
+        
         if lines is not None:
             for line in lines:
                 x1, y1, x2, y2 = line[0]
                 dx, dy = abs(x2 - x1), abs(y2 - y1)
 
-                if dy > dx and x1 < w//3 and x2 < w//3:  # vertical line on the left side
+                # Check for vertical line on the left side (characteristic of 5)
+                if dy > dx and x1 < w//3 and x2 < w//3:
                     vertical_left = True
                     # Draw detected line for debugging
                     cv2.line(roi_frame, (x+x1, y+y1), (x+x2, y+y2), (0, 255, 255), 2)  # yellow
+                
+                # Count horizontal lines (characteristic of 3)
+                elif dx > dy and dy < 10:  # Strong horizontal line
+                    horizontal_lines += 1
 
+        # More strict classification
         if vertical_left:
             return 5
-        else:
-            return 3
+        elif horizontal_lines >= 2:  # Digit 3 should have at least 2 horizontal segments
+            # Additional check: ensure the contour has reasonable aspect ratio for a digit
+            aspect_ratio = float(w) / h
+            if 0.3 < aspect_ratio < 0.8:  # Typical digit proportions
+                return 3
+        
+        # If neither condition is met strongly, don't classify (return None)
+        return None
 
     return None
 

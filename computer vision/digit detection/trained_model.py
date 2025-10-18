@@ -4,12 +4,15 @@ import cv2
 from PIL import Image
 
 # Load model and processor
+print("Loading model...")
 model_name = "farleyknight/mnist-digit-classification-2022-09-04"
 model = AutoModelForImageClassification.from_pretrained(model_name)
 processor = AutoImageProcessor.from_pretrained(model_name)
-
+print("Model loaded.")
 # Open webcam
+print("opening camera")
 cap = cv2.VideoCapture(0)
+print("camera opened")
 
 while True:
     ret, frame = cap.read()
